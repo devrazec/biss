@@ -1,0 +1,14 @@
+[Unit]
+Description=Prepare bundled MariaDB for the Centreon web installer
+After=mariadb.service
+Requires=mariadb.service
+Before=centreon.service
+ConditionPathExists=!/var/lib/mysql/.centreon-db-init.done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/db-init.sh
+
+[Install]
+WantedBy=multi-user.target

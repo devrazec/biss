@@ -8,6 +8,7 @@ npm init -y
 
 docker-compose up -d
 docker-compose down
+docker compose down -v
 
 # Run GLPI (https://github.com/glpi-project/glpi)
 
@@ -61,6 +62,91 @@ The same `docker compose up -d` also starts Zabbix 7.4:
 
 - The Zabbix server imports its schema on first start; the frontend shows a
   DB-connection error for a minute until that finishes.
+
+# Centreon (https://www.centreon.com) integrated with GLPI
+
+Centreon 24.10 (LTS) is built from `centreon/Dockerfile` and started by the
+same `docker compose up -d`.
+
+| Service    | URL / port                       | Notes                              |
+|------------|----------------------------------|------------------------------------|
+| `centreon` | http://localhost:8082/centreon   | Web install wizard on first run    |
+
+## Why it looks different from GLPI / Zabbix
+
+Centreon is not shipped as a container image. It runs Apache, php-fpm, MariaDB,
+`centengine`, `cbd` (broker), `gorgone` and `centreontrapd` together under
+**systemd**. So this service:
+
+- runs `systemd` as PID 1 — it needs `privileged: true` and `cgroup: host`
+  (already set in `docker-compose.yml`; works on Docker Desktop and most
+  cgroup v2 Linux hosts);
+- ships its **own** MariaDB instead of sharing the `db` service (Centreon is
+  very specific about MariaDB tuning and local-infile access).
+
+## First-run setup
+
+1. `docker compose up -d` (first build takes a few minutes). On first start the
+   `db-init.service` inside the container runs `centreon/db-init.sql` once — it
+   sets the MariaDB root password and adds TCP-capable root accounts so the web
+   installer can connect (the installer refuses an unsecured DBMS). Check it ran:
+   `docker compose exec centreon journalctl -u db-init.service`.
+2. Open http://localhost:8082/centreon and run the wizard:
+   - Database Host Address: `localhost`
+   - Root user: `root` — Root password: `root`
+   - Database user name: `centreon` — Database user password: `centreon`
+   - Create the Centreon admin account when prompted.
+3. After install, check services: `docker compose exec centreon systemctl status centreon`.
+
+## How it is integrated with GLPI
+
+- **Shared compose network.** `centreon` sits on the same network as `glpi`,
+  so Centreon can reach `http://glpi:80` (GLPI REST API) and GLPI can reach
+  `http://centreon:80/centreon/api/...`.
+- **Application-level sync** is configured afterwards: a GLPI ticket/asset
+  connector driven by Centreon's *Stream Connector* / event webhooks, or a
+  GLPI plugin polling the Centreon REST API with an API token
+  (Centreon: Administration > API tokens).
+
+# Guacamole (https://guacamole.apache.org) for remote administration
+
+Apache Guacamole 1.6 is a clientless RDP / VNC / SSH gateway — open a remote
+desktop or shell to any GLPI-tracked asset straight from the browser, no client
+software. Started by the same `docker compose up -d`.
+
+| Service     | URL / port                        | Notes                              |
+|-------------|-----------------------------------|------------------------------------|
+| `guacamole` | http://localhost:8083/guacamole/  | Login `guacadmin` / `guacadmin`    |
+| `guacd`     | (internal)                        | Protocol proxy daemon              |
+
+**Change the `guacadmin` password immediately** (top-right menu > Settings >
+Preferences).
+
+## How it is integrated with GLPI
+
+- **Shared database.** Guacamole stores its connections, users and history in
+  the `guacamole_db` database on the *same* `db` MariaDB container GLPI uses
+  (created by `db-init/20-guacamole-1-init.sql`; tables loaded by
+  `db-init/20-guacamole-2-schema.sql`).
+- **Shared network.** `guacamole` / `guacd` reach every other container by name
+  (e.g. RDP to a Windows asset, SSH to `centreon`, VNC to a lab VM on the host
+  via `host.docker.internal`).
+- **Launch from a GLPI asset.** In GLPI create an *external link*
+  (Setup > Dropdowns > External links, or Administration > ... > Links) on the
+  Computer/Network device item type pointing at a Guacamole connection, e.g.
+  `http://localhost:8083/guacamole/#/client/<base64>` where `<base64>` is
+  `<connectionID>` + `\0c\0` + `mysql` base64-encoded. The asset's IP/name
+  fields (`[IP]`, `[NAME]`) can be substituted into the URL.
+- Point Guacamole and GLPI at the same LDAP/SSO later so one login covers both.
+
+## Note
+
+The `guacamole_db` database is only auto-created when the `db_data` volume is
+first initialised. If the stack was already running before Guacamole was added,
+load it once manually:
+
+    docker compose exec -T db mariadb -uroot -p"$DB_ROOT_PASSWORD" < db-init/20-guacamole-1-init.sql
+    docker compose exec -T db mariadb -uroot -p"$DB_ROOT_PASSWORD" < db-init/20-guacamole-2-schema.sql
 
 # Install GLPI Agent on macOS
 

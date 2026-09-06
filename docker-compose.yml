@@ -20,8 +20,9 @@ services:
 
   # ---------------------------------------------------------------------------
   # Shared database - one MariaDB server, one database per app
-  #   - `glpi`   database + user  (created by the glpi image env vars)
-  #   - `zabbix` database + user  (created by ./db-init/10-zabbix.sql on first boot)
+  #   - `glpi`         database + user  (created by the glpi image env vars)
+  #   - `zabbix`       database + user  (./db-init/10-zabbix.sql, first boot)
+  #   - `guacamole_db` database + user  (./db-init/20-guacamole-*.sql, first boot)
   # ---------------------------------------------------------------------------
   db:
     image: "mariadb:11.4"
@@ -104,6 +105,78 @@ services:
       zabbix-server:
         condition: service_started
 
+  # ---------------------------------------------------------------------------
+  # Centreon 24.10 - monitoring platform (Nagios/centengine based)
+  #
+  # Centreon is not container-native: it runs many services under systemd, so
+  # this container needs systemd as PID 1 (privileged + cgroup host) and ships
+  # its OWN MariaDB rather than sharing the `db` service. After first start,
+  # finish setup in the web wizard at http://localhost:${CENTREON_HTTP_PORT}/centreon
+  # ---------------------------------------------------------------------------
+  centreon:
+    build:
+      context: ./centreon
+      args:
+        TZ: "${TZ:-UTC}"
+    image: "biss/centreon:24.10"
+    container_name: centreon
+    restart: "unless-stopped"
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
+    stop_grace_period: 30s
+    ports:
+      - "${CENTREON_HTTP_PORT:-8082}:80"
+    tmpfs:
+      - /run
+      - /run/lock
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - centreon_db:/var/lib/mysql
+      - centreon_etc:/etc/centreon
+      - centreon_engine_etc:/etc/centreon-engine
+      - centreon_broker_etc:/etc/centreon-broker
+      - centreon_gorgone_etc:/etc/centreon-gorgone
+      - centreon_var:/var/lib/centreon
+
+  # ---------------------------------------------------------------------------
+  # Apache Guacamole - clientless remote desktop gateway (RDP / VNC / SSH
+  # in the browser). Used for remote administration of assets tracked in GLPI.
+  #   guacd      - protocol proxy daemon (internal only)
+  #   guacamole  - web app (Tomcat), auth stored in the shared `db` MariaDB
+  # ---------------------------------------------------------------------------
+  guacd:
+    image: "guacamole/guacd:1.6.0"
+    container_name: guacd
+    restart: "unless-stopped"
+
+  guacamole:
+    image: "guacamole/guacamole:1.6.0"
+    container_name: guacamole
+    restart: "unless-stopped"
+    ports:
+      - "${GUAC_HTTP_PORT:-8083}:8080"
+    environment:
+      GUACD_HOSTNAME: "guacd"
+      MYSQL_HOSTNAME: "db"
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: "${GUAC_DB_NAME:-guacamole_db}"
+      MYSQL_USER: "${GUAC_DB_USER:-guacamole}"
+      MYSQL_PASSWORD: "${GUAC_DB_PASSWORD:-guacamole}"
+      # Let users authenticated by other extensions (e.g. GLPI SSO later) exist
+      MYSQL_AUTO_CREATE_ACCOUNTS: "true"
+    depends_on:
+      guacd:
+        condition: service_started
+      db:
+        condition: service_healthy
+
 volumes:
   glpi_data:
   db_data:
+  centreon_db:
+  centreon_etc:
+  centreon_engine_etc:
+  centreon_broker_etc:
+  centreon_gorgone_etc:
+  centreon_var:
