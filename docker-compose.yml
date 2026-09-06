@@ -1,6 +1,9 @@
 name: glpi
 
 services:
+  # ---------------------------------------------------------------------------
+  # GLPI - Asset & IT Service Management
+  # ---------------------------------------------------------------------------
   glpi:
     image: "glpi/glpi:11.0.8"
     container_name: glpi
@@ -15,6 +18,11 @@ services:
       db:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # Shared database - one MariaDB server, one database per app
+  #   - `glpi`   database + user  (created by the glpi image env vars)
+  #   - `zabbix` database + user  (created by ./db-init/10-zabbix.sql on first boot)
+  # ---------------------------------------------------------------------------
   db:
     image: "mariadb:11.4"
     container_name: glpi-db
@@ -22,18 +30,79 @@ services:
     command:
       - "--character-set-server=utf8mb4"
       - "--collation-server=utf8mb4_unicode_ci"
+      - "--log-bin-trust-function-creators=1"
     environment:
-      MARIADB_RANDOM_ROOT_PASSWORD: "yes"
+      MARIADB_ROOT_PASSWORD: "${DB_ROOT_PASSWORD:-root}"
       MARIADB_DATABASE: "${GLPI_DB_NAME}"
       MARIADB_USER: "${GLPI_DB_USER}"
       MARIADB_PASSWORD: "${GLPI_DB_PASSWORD}"
     volumes:
       - db_data:/var/lib/mysql
+      # *.sql / *.sh here run only when db_data is first created
+      - ./db-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Zabbix server - monitoring engine
+  # ---------------------------------------------------------------------------
+  zabbix-server:
+    image: "zabbix/zabbix-server-mysql:alpine-7.4-latest"
+    container_name: zabbix-server
+    restart: "unless-stopped"
+    ports:
+      - "${ZBX_SERVER_PORT:-10051}:10051"
+    environment:
+      DB_SERVER_HOST: "db"
+      DB_SERVER_PORT: "3306"
+      MYSQL_DATABASE: "${ZBX_DB_NAME:-zabbix}"
+      MYSQL_USER: "${ZBX_DB_USER:-zabbix}"
+      MYSQL_PASSWORD: "${ZBX_DB_PASSWORD:-zabbix}"
+      ZBX_STARTPOLLERS: "5"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Zabbix web frontend (Nginx + PHP)
+  # ---------------------------------------------------------------------------
+  zabbix-web:
+    image: "zabbix/zabbix-web-nginx-mysql:alpine-7.4-latest"
+    container_name: zabbix-web
+    restart: "unless-stopped"
+    ports:
+      - "${ZBX_HTTP_PORT:-8081}:8080"
+    environment:
+      ZBX_SERVER_HOST: "zabbix-server"
+      ZBX_SERVER_PORT: "10051"
+      DB_SERVER_HOST: "db"
+      DB_SERVER_PORT: "3306"
+      MYSQL_DATABASE: "${ZBX_DB_NAME:-zabbix}"
+      MYSQL_USER: "${ZBX_DB_USER:-zabbix}"
+      MYSQL_PASSWORD: "${ZBX_DB_PASSWORD:-zabbix}"
+      PHP_TZ: "${TZ:-UTC}"
+    depends_on:
+      db:
+        condition: service_healthy
+      zabbix-server:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # Zabbix agent 2 - collects metrics; also used to monitor the GLPI container
+  # ---------------------------------------------------------------------------
+  zabbix-agent:
+    image: "zabbix/zabbix-agent2:alpine-7.4-latest"
+    container_name: zabbix-agent
+    restart: "unless-stopped"
+    environment:
+      ZBX_SERVER_HOST: "zabbix-server"
+      ZBX_HOSTNAME: "Zabbix server"
+    depends_on:
+      zabbix-server:
+        condition: service_started
 
 volumes:
   glpi_data:
