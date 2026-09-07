@@ -171,9 +171,47 @@ services:
       db:
         condition: service_healthy
 
+  # ---------------------------------------------------------------------------
+  # RustDesk server (OSS) - self-hosted ID/rendezvous + relay for the RustDesk
+  # remote-desktop client. Lets GLPI-tracked machines be reached by RustDesk ID
+  # without going through the public RustDesk infrastructure.
+  #   hbbs - ID / rendezvous server (registration, NAT hole punching)
+  #   hbbr - relay server (used when a direct P2P connection is not possible)
+  #
+  # RUSTDESK_RELAY_HOST must be an address the *clients* can reach (the Docker
+  # host's LAN/public IP or hostname). 127.0.0.1 only works for clients on this
+  # same machine.
+  # ---------------------------------------------------------------------------
+  rustdesk-hbbr:
+    image: "rustdesk/rustdesk-server:1.1.16"
+    container_name: rustdesk-hbbr
+    restart: "unless-stopped"
+    command: hbbr
+    ports:
+      - "21117:21117"       # relay (client <-> client data)
+      - "21119:21119"       # relay for the web client
+    volumes:
+      - rustdesk_data:/root
+
+  rustdesk-hbbs:
+    image: "rustdesk/rustdesk-server:1.1.16"
+    container_name: rustdesk-hbbs
+    restart: "unless-stopped"
+    command: hbbs -r ${RUSTDESK_RELAY_HOST:-127.0.0.1}:21117
+    ports:
+      - "21115:21115"       # NAT type test
+      - "21116:21116"       # ID registration / hole punching (TCP)
+      - "21116:21116/udp"   # ID registration / hole punching (UDP)
+      - "21118:21118"       # web client
+    volumes:
+      - rustdesk_data:/root
+    depends_on:
+      - rustdesk-hbbr
+
 volumes:
   glpi_data:
   db_data:
+  rustdesk_data:
   centreon_db:
   centreon_etc:
   centreon_engine_etc:

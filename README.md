@@ -148,6 +148,41 @@ load it once manually:
     docker compose exec -T db mariadb -uroot -p"$DB_ROOT_PASSWORD" < db-init/20-guacamole-1-init.sql
     docker compose exec -T db mariadb -uroot -p"$DB_ROOT_PASSWORD" < db-init/20-guacamole-2-schema.sql
 
+# RustDesk server (https://rustdesk.com) for remote administration
+
+Self-hosted RustDesk OSS server (v1.1.16) so RustDesk clients connect through
+*your* infrastructure instead of the public rendezvous servers. Started by the
+same `docker compose up -d`.
+
+| Container       | Ports                                   | Role                            |
+|-----------------|-----------------------------------------|---------------------------------|
+| `rustdesk-hbbs` | 21115/tcp, 21116/tcp+udp, 21118/tcp     | ID / rendezvous (registration)  |
+| `rustdesk-hbbr` | 21117/tcp, 21119/tcp                    | Relay (fallback when no P2P)    |
+
+## Client setup
+
+1. Set `RUSTDESK_RELAY_HOST` in `.env` to this host's LAN/public IP (not
+   `127.0.0.1` unless the client is on this machine), then
+   `docker compose up -d rustdesk-hbbs`.
+2. Get the server public key:
+
+       docker run --rm -v glpi_rustdesk_data:/d alpine cat /d/id_ed25519.pub
+
+3. In the RustDesk client: **Settings > Network > ID/Relay Server**
+   - ID Server: `<RUSTDESK_RELAY_HOST>`
+   - Relay Server: `<RUSTDESK_RELAY_HOST>` (leave blank to use the ID server)
+   - Key: the value from step 2
+
+## How it ties in with GLPI
+
+- The **GLPI Agent** inventories each machine's RustDesk ID into
+  GLPI > the computer's **Remote management** tab, so every asset's RustDesk ID
+  is visible next to it in the inventory.
+- To connect: read the ID from that tab, punch it into a RustDesk client that
+  points at this server (above). No public RustDesk servers involved.
+- `rustdesk_data` volume holds the key pair and `db_v2.sqlite3` (registered
+  peers); back it up if you don't want clients to re-key after a rebuild.
+
 # Install GLPI Agent on macOS
 
 Download
