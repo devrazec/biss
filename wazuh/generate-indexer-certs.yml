@@ -1,0 +1,17 @@
+# One-shot helper: generates the root CA + node certificates for the Wazuh
+# indexer, manager and dashboard into ./config/wazuh_indexer_ssl_certs/.
+# Run once from the repo root before the first `docker compose up`:
+#
+#   docker compose -f wazuh/generate-indexer-certs.yml run --rm generator
+#
+name: glpi-wazuh-certs
+
+services:
+  generator:
+    image: wazuh/wazuh-certs-generator:0.0.4
+    hostname: wazuh-certs-generator
+    environment:
+      - CERT_TOOL_VERSION=4.14
+    volumes:
+      - ./config/wazuh_indexer_ssl_certs/:/certificates/
+      - ./config/certs.yml:/config/certs.yml

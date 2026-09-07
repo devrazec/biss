@@ -183,6 +183,78 @@ same `docker compose up -d`.
 - `rustdesk_data` volume holds the key pair and `db_v2.sqlite3` (registered
   peers); back it up if you don't want clients to re-key after a rebuild.
 
+# Wazuh (https://wazuh.com) as the security layer
+
+Wazuh 4.14 single-node stack (SIEM / XDR) — threat detection, file integrity
+monitoring, rootkit and vulnerability detection, security configuration
+assessment (SCA) and active response for the assets tracked in GLPI. Three
+containers, defined in `docker-compose.yml` (and `docker-compose-centreon.yml`):
+
+| Service           | URL / port                     | Notes                                        |
+|-------------------|--------------------------------|----------------------------------------------|
+| `wazuh.dashboard` | https://localhost:8444         | Web UI. Login `admin` / `SecretPassword`     |
+| `wazuh.manager`   | tcp://localhost:1514 (events)  | Agents enroll on `1515`, API on `55000`      |
+| `wazuh.indexer`   | (internal)                     | OpenSearch store for alerts / events         |
+
+Config lives under `wazuh/config/` (mounted read-only into the containers);
+it is copied from the upstream `wazuh/wazuh-docker` `single-node` deployment.
+
+## First-run setup
+
+1. **Host prerequisite.** The indexer (OpenSearch) needs
+   `vm.max_map_count >= 262144`. Docker Desktop sets this already; on a Linux
+   host run `sudo sysctl -w vm.max_map_count=262144` (persist it in
+   `/etc/sysctl.conf`).
+
+2. **Generate the certificates once**, from the repo root, before the first
+   `docker compose up`:
+
+       docker compose -f wazuh/generate-indexer-certs.yml run --rm generator
+
+   This writes the root CA + node certs into
+   `wazuh/config/wazuh_indexer_ssl_certs/` (git-ignored).
+
+3. **Start the stack:**
+
+       docker compose up -d
+
+   The indexer takes ~1 minute to come up; until then the dashboard logs
+   `Wazuh indexer is not ready yet` and the UI shows a connection error. Then
+   open https://localhost:8444 (accept the self-signed certificate warning).
+
+## Default credentials — change them
+
+The stack ships with the upstream demo passwords. To harden it, follow
+*Changing the default password of the Wazuh users* in the Wazuh docs: generate
+new bcrypt hashes, update `wazuh/config/wazuh_indexer/internal_users.yml`, then
+update the matching `INDEXER_PASSWORD` / `DASHBOARD_PASSWORD` / `API_PASSWORD`
+values in the compose file and re-run the securityadmin script.
+
+## How it is integrated with GLPI
+
+- **Shared compose network.** Wazuh sits on the same network as `glpi`, so a
+  Wazuh integration script can reach `http://glpi:80` (GLPI REST API) to open a
+  ticket per alert, and GLPI can query the Wazuh API at
+  `https://wazuh.manager:55000`.
+- **Agents on the assets.** Install the Wazuh agent on each GLPI-tracked
+  machine pointing at this host (`1514`/`1515`); the agent's inventory
+  (syscollector) and the GLPI Agent inventory then describe the same estate.
+- **Application-level sync** is configured afterwards: a GLPI plugin or a
+  Wazuh integration (`integrations/` / `<integration>` block) that pushes
+  alerts into GLPI's API with an API token (GLPI: Setup > General > API).
+
+## Install the Wazuh agent on macOS
+
+Apple silicon (use `...intel64.pkg` on Intel). Set `WAZUH_MANAGER` to this
+Docker host's LAN/public IP:
+
+    curl -O https://packages.wazuh.com/4.x/macos/wazuh-agent-4.14.7-1.arm64.pkg
+    echo "WAZUH_MANAGER='<THIS_HOST_IP>'" > /tmp/wazuh_envs
+    sudo installer -pkg wazuh-agent-4.14.7-1.arm64.pkg -target /
+    sudo /Library/Ossec/bin/wazuh-control start
+
+Then confirm the agent shows up under *Agents* in the dashboard.
+
 # Install GLPI Agent on macOS
 
 Download
@@ -241,3 +313,8 @@ cat /tmp/zabbix_agentd.log
 
 scutil --get LocalHostName
 Users-MacBook-Pro
+
+# Wazuh
+
+docker compose -f wazuh/generate-indexer-certs.yml run --rm generator
+docker compose up -d
