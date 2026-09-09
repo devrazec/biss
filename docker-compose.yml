@@ -19,6 +19,66 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
+  # GLPI Agent - Network Discovery + Network (SNMP) Inventory
+  #
+  # Runs in managed mode: it registers against the GLPI server and opens an
+  # HTTP control listener on 62354 so the GLPI Inventory plugin
+  # (GLPI: Setup > Plugins > GLPI Inventory) can push NetDiscovery /
+  # NetInventory jobs to it. The bundled ToolBox UI
+  # (http://localhost:${GLPI_AGENT_PORT:-62355}/toolbox) can also launch ad-hoc
+  # SNMP sweeps without the server - set IP ranges and SNMP credentials there.
+  #
+  # NOTE: SNMP / ARP / NetBIOS scans only reach devices this container can
+  # reach. On the compose bridge network that is limited to what the Docker
+  # host routes to. To scan the host's local LAN, comment out `ports:` and set
+  #   network_mode: "host"
+  # then point GLPI_SERVER at the host address (e.g. http://<host-ip>:8080/)
+  # since the `glpi` container name is not resolvable in host mode.
+  #
+  # The published host port defaults to 62355, not 62354: a GLPI Agent
+  # installed natively on the host already owns 62354. The container's own
+  # listener stays 62354 and the GLPI server reaches it as `glpi-agent:62354`
+  # on the compose network regardless - the host port is only for the ToolBox
+  # UI in your browser.
+  # ---------------------------------------------------------------------------
+  glpi-agent:
+    image: "rdrit/glpi-agent:1.19"
+    container_name: glpi-agent
+    restart: "unless-stopped"
+    # The image entrypoint has a bug: it sets the ToolBox auth password from
+    # GLPI_TOOLBOX_AUTH_USER instead of ..._PASSWORD, so the password always
+    # equals the username. Patch that one line before the real entrypoint runs.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        sed -i 's#AUTH_PASSWORD="$${GLPI_TOOLBOX_AUTH_USER:-""}"#AUTH_PASSWORD="$${GLPI_TOOLBOX_AUTH_PASSWORD:-""}"#' /usr/local/bin/docker-entrypoint.sh
+        exec /usr/local/bin/docker-entrypoint.sh
+    ports:
+      - "${GLPI_AGENT_PORT:-62355}:62354"
+    environment:
+      GLPI_SERVER: "http://glpi:80/"
+      GLPI_SERVER_NO_SSL_CHECK: "true"
+      GLPI_TAG: "${GLPI_AGENT_TAG:-network-scanner}"
+      GLPI_HTTPD: "true"
+      GLPI_HTTPD_PORT: "62354"
+      GLPI_TOOLBOX_ENABLE: "1"
+      GLPI_TOOLBOX_AUTH_ENABLE: "true"
+      GLPI_TOOLBOX_AUTH_USER: "${GLPI_AGENT_TOOLBOX_USER:-admin}"
+      GLPI_TOOLBOX_AUTH_PASSWORD: "${GLPI_AGENT_TOOLBOX_PASSWORD:-admin}"
+    volumes:
+      # ToolBox config: navbar pages, SNMP credentials, IP ranges, scan jobs.
+      # Bind-mounted so it is host-editable/versionable. The agent rewrites it
+      # when you save changes in the UI, so the real file is git-ignored.
+      #   cp glpi-agent/toolbox.yaml.example glpi-agent/toolbox.yaml
+      - ./glpi-agent/toolbox.yaml:/etc/glpi-agent/toolbox.yaml
+      # Agent identity (deviceid) + locally stored scan results
+      - glpi_agent_data:/var/lib/glpi-agent
+    depends_on:
+      glpi:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
   # Shared database - one MariaDB server, one database per app
   #   - `glpi`         database + user  (created by the glpi image env vars)
   #   - `zabbix`       database + user  (./db-init/10-zabbix.sql, first boot)
@@ -176,5 +236,6 @@ services:
 
 volumes:
   glpi_data:
+  glpi_agent_data:
   db_data:
   rustdesk_data:
