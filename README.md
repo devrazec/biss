@@ -26,88 +26,21 @@ normal/normal, post-only/postonly. Change or delete them immediately.
     docker compose down          # stop
     docker compose down -v       # stop and wipe database + files
 
-# GLPI Agent (https://glpi-agent.readthedocs.io) — Network Discovery & SNMP Inventory
+# Network Discovery & SNMP Inventory
 
-The `glpi-agent` container (`rdrit/glpi-agent`, community image tracking the
-upstream agent — there is no official one) runs as a **network scanner**: it
-sweeps IP ranges with SNMP / ICMP / ARP / NetBIOS, reports discovered devices
-to GLPI (Network Discovery), then pulls full details from the SNMP-enabled ones
-— switches, routers, printers, APs, IP phones, UPS units (Network Inventory).
-Started by the same `docker compose up -d`.
+The Docker stack does not run a GLPI Agent for network scanning — it is done
+from a machine that sits on the target network (see *Install GLPI Agent on
+macOS* below). A containerised agent on the compose bridge network cannot reach
+LAN devices over SNMP / ARP / NetBIOS anyway.
 
-| Service      | URL / port                        | Notes                                       |
-|--------------|-----------------------------------|---------------------------------------------|
-| `glpi-agent` | http://localhost:62355/toolbox    | ToolBox UI. Basic auth. Container listens on 62354. |
+To scan the network for SNMP devices (switches, routers, printers, APs, UPS):
 
-> The host port is **62355**, not the agent's usual 62354 — a GLPI Agent
-> installed natively on this machine already binds 62354. The container's
-> internal listener is still 62354 and that is what the GLPI server talks to
-> (`glpi-agent:62354` on the compose network), so the offset is cosmetic.
-> Change `GLPI_AGENT_PORT` in `.env` if you have no local agent.
-
-ToolBox login is `GLPI_AGENT_TOOLBOX_USER` / `GLPI_AGENT_TOOLBOX_PASSWORD` from
-`.env` (`admin` / `changeme` by default — **change it**).
-
-> The image's entrypoint has a bug (it sets the ToolBox password from the
-> *username* variable). `docker-compose.yml` patches that one line at start so
-> `GLPI_AGENT_TOOLBOX_PASSWORD` is actually used.
-
-## How it is integrated with GLPI
-
-- **Managed mode.** The agent registers against `http://glpi:80/` and keeps an
-  HTTP listener on `62354` open, so the server can push jobs to it.
-- **GLPI Inventory plugin (server-driven).** Install the *GLPI Inventory*
-  plugin (GLPI: Setup > Plugins), then in its menu define an IP range + SNMP
-  credentials and a NetDiscovery / NetInventory task assigned to this agent.
-  The agent shows up there once it has contacted the server.
-- **ToolBox (agent-driven).** The bundled **ToolBox** UI runs ad-hoc SNMP
-  sweeps without the plugin. Its pages (IP Ranges, Scheduling, MIB support are
-  enabled by `glpi-agent/toolbox.yaml`; the rest are on by default):
-
-  | Page | Path | Purpose |
-  |------|------|---------|
-  | Credentials | `/toolbox/credentials` | SNMP v1/v2c/v3 (also SSH / WinRM) credentials |
-  | IP Ranges   | `/toolbox/ip_range`    | IP ranges to scan; attach credential(s) to each |
-  | Inventory   | `/toolbox/inventory`   | Create + run *Network scan* jobs over a range |
-  | Scheduling  | `/toolbox/scheduling`  | Recurring schedules for those jobs |
-  | Results     | `/toolbox/results`     | Locally stored discovery / inventory results |
-
-  Note the path is `/toolbox/ip_range` (underscore) — `/toolbox/iprange`
-  returns an empty reply. Easiest is to navigate from the top menu.
-
-- **Tag.** Every inventory this agent submits carries `GLPI_AGENT_TAG`
-  (`network-scanner`), which groups its assets in GLPI.
-- **Persistence.** `glpi-agent/toolbox.yaml` (git-ignored, bind-mounted) holds
-  the ToolBox config + credentials + ranges + jobs; the `glpi_agent_data`
-  volume holds the agent's identity and locally stored results.
-
-## Run a network scan from the ToolBox
-
-1. **Credentials** → *Add* → type `SNMP`, version `v2c`, community string
-   (e.g. `public`), or `v3` with user + auth/priv. Save.
-2. **IP Ranges** (`/toolbox/ip_range`) → *Add new IP range* → name, first IP,
-   last IP, and tick the credential(s) from step 1. Save.
-3. **Inventory** → *Add new inventory task* → name it, **Type = Network scan**,
-   pick the IP range, set threads (e.g. 4) and a timeout. Create.
-4. **Inventory** list → select the task, **enable** it, then use the **run**
-   action. Watch with `docker compose logs -f glpi-agent`.
-5. Discovered devices are sent to GLPI (tagged `network-scanner`) and also
-   appear under **Results**.
-
-Empty `/toolbox/inventory` just means no task exists yet — it is the job list,
-not a results view.
-
-## Note — reaching the devices
-
-SNMP / ARP / NetBIOS scans only reach what **this container** can reach. On the
-compose bridge network that is limited to whatever the Docker host routes to,
-which is usually not the office LAN. To scan the host's local network, edit
-`docker-compose.yml`: drop the `ports:` block on `glpi-agent` and add
-
-    network_mode: "host"
-
-then set `GLPI_SERVER` to the host address (e.g. `http://<host-ip>:8080/`) —
-the `glpi` container name is not resolvable in host mode.
+1. Install the **GLPI Inventory** plugin in GLPI (Setup > Plugins) — GLPI core
+   inventory does not do SNMP network tasks.
+2. Run a GLPI Agent on a host on the target subnet, in managed mode:
+   `glpi-agent --server http://<glpi-host>:8080/ --daemon`.
+3. In GLPI's *GLPI Inventory* menu, define an IP range + SNMP credentials and a
+   NetDiscovery / NetInventory task assigned to that agent.
 
 # Zabbix (https://www.zabbix.com) integrated with GLPI
 
