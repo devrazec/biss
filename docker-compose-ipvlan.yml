@@ -1,0 +1,220 @@
+name: glpi
+
+# ---------------------------------------------------------------------------
+# Networking
+#
+# Every service is attached to `lan`, an ipvlan (L2) network. Each container
+# gets its own IP directly on the physical LAN (192.168.0.0/24) - no port
+# publishing, no NAT. Reach a service on its own address, e.g. GLPI at
+# http://192.168.0.20 (port 80), Zabbix web at http://192.168.0.23:8080.
+#
+# Requirements / notes:
+#   - Linux host only. ipvlan does NOT work on Docker Desktop (macOS/Windows).
+#   - Set IPVLAN_PARENT in .env to the host NIC on this subnet (e.g. eth0,
+#     ens18, bond0, or a VLAN sub-interface like eth0.10).
+#   - The static IPs below (.20-.28) must be OUTSIDE your router's DHCP pool.
+#   - ipvlan L2 intentionally blocks container <-> host traffic; containers
+#     can still talk to each other and to the rest of the LAN.
+#   - Inter-container DNS (db, zabbix-server, guacd, ...) still works.
+# ---------------------------------------------------------------------------
+networks:
+  lan:
+    driver: ipvlan
+    driver_opts:
+      parent: "${IPVLAN_PARENT:-eth0}"
+      ipvlan_mode: l2
+    ipam:
+      config:
+        - subnet: "192.168.0.0/24"
+          gateway: "192.168.0.1"
+
+services:
+  # ---------------------------------------------------------------------------
+  # GLPI - Asset & IT Service Management        http://192.168.0.20  (port 80)
+  # ---------------------------------------------------------------------------
+  glpi:
+    image: "glpi/glpi:11.0.8"
+    container_name: glpi
+    restart: "unless-stopped"
+    networks:
+      lan:
+        ipv4_address: "192.168.0.20"
+    env_file: .env
+    volumes:
+      # Named volume holds GLPI config, files, plugins and marketplace (/var/glpi)
+      - glpi_data:/var/glpi
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Shared database - one MariaDB server, one database per app
+  #   http://192.168.0.21  (port 3306)
+  #   - `glpi`         database + user  (created by the glpi image env vars)
+  #   - `zabbix`       database + user  (./db-init/10-zabbix.sql, first boot)
+  #   - `guacamole_db` database + user  (./db-init/20-guacamole-*.sql, first boot)
+  # ---------------------------------------------------------------------------
+  db:
+    image: "mariadb:11.4"
+    container_name: glpi-db
+    restart: "unless-stopped"
+    networks:
+      lan:
+        ipv4_address: "192.168.0.21"
+    command:
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_unicode_ci"
+      - "--log-bin-trust-function-creators=1"
+    environment:
+      MARIADB_ROOT_PASSWORD: "${DB_ROOT_PASSWORD:-root}"
+      MARIADB_DATABASE: "${GLPI_DB_NAME}"
+      MARIADB_USER: "${GLPI_DB_USER}"
+      MARIADB_PASSWORD: "${GLPI_DB_PASSWORD}"
+    volumes:
+      - db_data:/var/lib/mysql
+      # *.sql / *.sh here run only when db_data is first created
+      - ./db-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Zabbix server - monitoring engine          192.168.0.22  (port 10051)
+  # ---------------------------------------------------------------------------
+  zabbix-server:
+    image: "zabbix/zabbix-server-mysql:alpine-7.4-latest"
+    container_name: zabbix-server
+    restart: "unless-stopped"
+    networks:
+      lan:
+        ipv4_address: "192.168.0.22"
+    environment:
+      DB_SERVER_HOST: "db"
+      DB_SERVER_PORT: "3306"
+      MYSQL_DATABASE: "${ZBX_DB_NAME:-zabbix}"
+      MYSQL_USER: "${ZBX_DB_USER:-zabbix}"
+      MYSQL_PASSWORD: "${ZBX_DB_PASSWORD:-zabbix}"
+      ZBX_STARTPOLLERS: "5"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Zabbix web frontend (Nginx + PHP)          http://192.168.0.23:8080
+  # ---------------------------------------------------------------------------
+  zabbix-web:
+    image: "zabbix/zabbix-web-nginx-mysql:alpine-7.4-latest"
+    container_name: zabbix-web
+    restart: "unless-stopped"
+    networks:
+      lan:
+        ipv4_address: "192.168.0.23"
+    environment:
+      ZBX_SERVER_HOST: "zabbix-server"
+      ZBX_SERVER_PORT: "10051"
+      DB_SERVER_HOST: "db"
+      DB_SERVER_PORT: "3306"
+      MYSQL_DATABASE: "${ZBX_DB_NAME:-zabbix}"
+      MYSQL_USER: "${ZBX_DB_USER:-zabbix}"
+      MYSQL_PASSWORD: "${ZBX_DB_PASSWORD:-zabbix}"
+      PHP_TZ: "${TZ:-UTC}"
+    depends_on:
+      db:
+        condition: service_healthy
+      zabbix-server:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # Zabbix agent 2 - collects metrics; also used to monitor the GLPI container
+  #   192.168.0.24  (port 10050)
+  # ---------------------------------------------------------------------------
+  zabbix-agent:
+    image: "zabbix/zabbix-agent2:alpine-7.4-latest"
+    container_name: zabbix-agent
+    restart: "unless-stopped"
+    networks:
+      lan:
+        ipv4_address: "192.168.0.24"
+    environment:
+      ZBX_SERVER_HOST: "zabbix-server"
+      ZBX_HOSTNAME: "Zabbix server"
+    depends_on:
+      zabbix-server:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # Apache Guacamole - clientless remote desktop gateway (RDP / VNC / SSH
+  # in the browser). Used for remote administration of assets tracked in GLPI.
+  #   guacd      - protocol proxy daemon          192.168.0.25  (port 4822)
+  #   guacamole  - web app (Tomcat)               http://192.168.0.26:8080/guacamole/
+  # ---------------------------------------------------------------------------
+  guacd:
+    image: "guacamole/guacd:1.6.0"
+    container_name: guacd
+    restart: "unless-stopped"
+    networks:
+      lan:
+        ipv4_address: "192.168.0.25"
+
+  guacamole:
+    image: "guacamole/guacamole:1.6.0"
+    container_name: guacamole
+    restart: "unless-stopped"
+    networks:
+      lan:
+        ipv4_address: "192.168.0.26"
+    environment:
+      GUACD_HOSTNAME: "guacd"
+      MYSQL_HOSTNAME: "db"
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: "${GUAC_DB_NAME:-guacamole_db}"
+      MYSQL_USER: "${GUAC_DB_USER:-guacamole}"
+      MYSQL_PASSWORD: "${GUAC_DB_PASSWORD:-guacamole}"
+      # Let users authenticated by other extensions (e.g. GLPI SSO later) exist
+      MYSQL_AUTO_CREATE_ACCOUNTS: "true"
+    depends_on:
+      guacd:
+        condition: service_started
+      db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # RustDesk server (OSS) - self-hosted ID/rendezvous + relay for the RustDesk
+  # remote-desktop client. Lets GLPI-tracked machines be reached by RustDesk ID
+  # without going through the public RustDesk infrastructure.
+  #   hbbr - relay server                        192.168.0.27  (21117, 21119)
+  #   hbbs - ID / rendezvous server              192.168.0.28  (21115-21116, 21118)
+  #
+  # RUSTDESK_RELAY_HOST must be an address the *clients* can reach. With ipvlan
+  # each server has its own LAN IP, so 192.168.0.28 works for LAN clients.
+  # ---------------------------------------------------------------------------
+  rustdesk-hbbr:
+    image: "rustdesk/rustdesk-server:1.1.16"
+    container_name: rustdesk-hbbr
+    restart: "unless-stopped"
+    command: hbbr
+    networks:
+      lan:
+        ipv4_address: "192.168.0.27"
+    volumes:
+      - rustdesk_data:/root
+
+  rustdesk-hbbs:
+    image: "rustdesk/rustdesk-server:1.1.16"
+    container_name: rustdesk-hbbs
+    restart: "unless-stopped"
+    command: hbbs -r ${RUSTDESK_RELAY_HOST:-127.0.0.1}:21117
+    networks:
+      lan:
+        ipv4_address: "192.168.0.28"
+    volumes:
+      - rustdesk_data:/root
+    depends_on:
+      - rustdesk-hbbr
+
+volumes:
+  glpi_data:
+  db_data:
+  rustdesk_data:

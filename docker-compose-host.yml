@@ -1,0 +1,180 @@
+name: glpi
+
+services:
+  # ---------------------------------------------------------------------------
+  # GLPI - Asset & IT Service Management
+  # ---------------------------------------------------------------------------
+  glpi:
+    image: "glpi/glpi:11.0.8"
+    container_name: glpi
+    restart: "unless-stopped"
+    ports:
+      - "${GLPI_HTTP_PORT:-8080}:80"
+    env_file: .env
+    volumes:
+      # Named volume holds GLPI config, files, plugins and marketplace (/var/glpi)
+      - glpi_data:/var/glpi
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Shared database - one MariaDB server, one database per app
+  #   - `glpi`         database + user  (created by the glpi image env vars)
+  #   - `zabbix`       database + user  (./db-init/10-zabbix.sql, first boot)
+  #   - `guacamole_db` database + user  (./db-init/20-guacamole-*.sql, first boot)
+  # ---------------------------------------------------------------------------
+  db:
+    image: "mariadb:11.4"
+    container_name: glpi-db
+    restart: "unless-stopped"
+    command:
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_unicode_ci"
+      - "--log-bin-trust-function-creators=1"
+    environment:
+      MARIADB_ROOT_PASSWORD: "${DB_ROOT_PASSWORD:-root}"
+      MARIADB_DATABASE: "${GLPI_DB_NAME}"
+      MARIADB_USER: "${GLPI_DB_USER}"
+      MARIADB_PASSWORD: "${GLPI_DB_PASSWORD}"
+    volumes:
+      - db_data:/var/lib/mysql
+      # *.sql / *.sh here run only when db_data is first created
+      - ./db-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Zabbix server - monitoring engine
+  # ---------------------------------------------------------------------------
+  zabbix-server:
+    image: "zabbix/zabbix-server-mysql:alpine-7.4-latest"
+    container_name: zabbix-server
+    restart: "unless-stopped"
+    ports:
+      - "${ZBX_SERVER_PORT:-10051}:10051"
+    environment:
+      DB_SERVER_HOST: "db"
+      DB_SERVER_PORT: "3306"
+      MYSQL_DATABASE: "${ZBX_DB_NAME:-zabbix}"
+      MYSQL_USER: "${ZBX_DB_USER:-zabbix}"
+      MYSQL_PASSWORD: "${ZBX_DB_PASSWORD:-zabbix}"
+      ZBX_STARTPOLLERS: "5"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Zabbix web frontend (Nginx + PHP)
+  # ---------------------------------------------------------------------------
+  zabbix-web:
+    image: "zabbix/zabbix-web-nginx-mysql:alpine-7.4-latest"
+    container_name: zabbix-web
+    restart: "unless-stopped"
+    ports:
+      - "${ZBX_HTTP_PORT:-8081}:8080"
+    environment:
+      ZBX_SERVER_HOST: "zabbix-server"
+      ZBX_SERVER_PORT: "10051"
+      DB_SERVER_HOST: "db"
+      DB_SERVER_PORT: "3306"
+      MYSQL_DATABASE: "${ZBX_DB_NAME:-zabbix}"
+      MYSQL_USER: "${ZBX_DB_USER:-zabbix}"
+      MYSQL_PASSWORD: "${ZBX_DB_PASSWORD:-zabbix}"
+      PHP_TZ: "${TZ:-UTC}"
+    depends_on:
+      db:
+        condition: service_healthy
+      zabbix-server:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # Zabbix agent 2 - collects metrics; also used to monitor the GLPI container
+  # ---------------------------------------------------------------------------
+  zabbix-agent:
+    image: "zabbix/zabbix-agent2:alpine-7.4-latest"
+    container_name: zabbix-agent
+    restart: "unless-stopped"
+    environment:
+      ZBX_SERVER_HOST: "zabbix-server"
+      ZBX_HOSTNAME: "Zabbix server"
+    depends_on:
+      zabbix-server:
+        condition: service_started
+
+  # ---------------------------------------------------------------------------
+  # Apache Guacamole - clientless remote desktop gateway (RDP / VNC / SSH
+  # in the browser). Used for remote administration of assets tracked in GLPI.
+  #   guacd      - protocol proxy daemon (internal only)
+  #   guacamole  - web app (Tomcat), auth stored in the shared `db` MariaDB
+  # ---------------------------------------------------------------------------
+  guacd:
+    image: "guacamole/guacd:1.6.0"
+    container_name: guacd
+    restart: "unless-stopped"
+
+  guacamole:
+    image: "guacamole/guacamole:1.6.0"
+    container_name: guacamole
+    restart: "unless-stopped"
+    ports:
+      - "${GUAC_HTTP_PORT:-8083}:8080"
+    environment:
+      GUACD_HOSTNAME: "guacd"
+      MYSQL_HOSTNAME: "db"
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: "${GUAC_DB_NAME:-guacamole_db}"
+      MYSQL_USER: "${GUAC_DB_USER:-guacamole}"
+      MYSQL_PASSWORD: "${GUAC_DB_PASSWORD:-guacamole}"
+      # Let users authenticated by other extensions (e.g. GLPI SSO later) exist
+      MYSQL_AUTO_CREATE_ACCOUNTS: "true"
+    depends_on:
+      guacd:
+        condition: service_started
+      db:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # RustDesk server (OSS) - self-hosted ID/rendezvous + relay for the RustDesk
+  # remote-desktop client. Lets GLPI-tracked machines be reached by RustDesk ID
+  # without going through the public RustDesk infrastructure.
+  #   hbbs - ID / rendezvous server (registration, NAT hole punching)
+  #   hbbr - relay server (used when a direct P2P connection is not possible)
+  #
+  # RUSTDESK_RELAY_HOST must be an address the *clients* can reach (the Docker
+  # host's LAN/public IP or hostname). 127.0.0.1 only works for clients on this
+  # same machine.
+  # ---------------------------------------------------------------------------
+  rustdesk-hbbr:
+    image: "rustdesk/rustdesk-server:1.1.16"
+    container_name: rustdesk-hbbr
+    restart: "unless-stopped"
+    command: hbbr
+    ports:
+      - "21117:21117"       # relay (client <-> client data)
+      - "21119:21119"       # relay for the web client
+    volumes:
+      - rustdesk_data:/root
+
+  rustdesk-hbbs:
+    image: "rustdesk/rustdesk-server:1.1.16"
+    container_name: rustdesk-hbbs
+    restart: "unless-stopped"
+    command: hbbs -r ${RUSTDESK_RELAY_HOST:-127.0.0.1}:21117
+    ports:
+      - "21115:21115"       # NAT type test
+      - "21116:21116"       # ID registration / hole punching (TCP)
+      - "21116:21116/udp"   # ID registration / hole punching (UDP)
+      - "21118:21118"       # web client
+    volumes:
+      - rustdesk_data:/root
+    depends_on:
+      - rustdesk-hbbr
+
+volumes:
+  glpi_data:
+  db_data:
+  rustdesk_data:
