@@ -372,5 +372,7 @@ scp -r /Users/user/projects/biss parallels@192.168.0.101:/home/parallels/
 sudo docker compose -f docker-compose-ipvlan-agent.yml up -d
 sudo docker compose down
 
-
-
+sudo docker compose -f docker-compose-ipvlan-agent.yml ps glpi-agent
+sudo docker compose -f docker-compose-ipvlan-agent.yml logs --tail=100 glpi-agent
+sudo docker compose -f docker-compose-ipvlan-agent.yml exec zabbix-agent ping -c2 192.168.0.29
+sudo docker compose -f docker-compose-ipvlan-agent.yml exec glpi-agent curl -v http://192.168.0.20/Inventory/Configuration

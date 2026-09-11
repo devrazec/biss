@@ -236,7 +236,7 @@ services:
         ipv4_address: "192.168.0.29"
     env_file: .env
     environment:
-      GLPI_SERVER: "${GLPI_AGENT_SERVER:-http://192.168.0.20/front/inventory.php}"
+      GLPI_SERVER: "${GLPI_AGENT_SERVER:-http://192.168.0.20}"
       GLPI_SERVER_NO_SSL_CHECK: "${GLPI_AGENT_NO_SSL_CHECK:-true}"
       GLPI_TAG: "${GLPI_AGENT_TAG:-network-discovery}"
     volumes:
