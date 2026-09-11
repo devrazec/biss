@@ -334,3 +334,43 @@ Users-MacBook-Pro
 
 docker compose -f wazuh/generate-indexer-certs.yml run --rm generator
 docker compose up -d
+
+# Debian 11 on Parallels
+
+sudo apt update
+
+sudo apt upgrade -y
+
+sudo apt install -y openssh-server
+sudo systemctl enable ssh 
+sudo systemctl start ssh
+sudo systemctl status ssh
+ssh parallels@192.168.0.101
+
+sudo apt install -y ca-certificates curl gnupg
+
+sudo install -m 0755 -d /etc/apt/keyrings
+
+curl -fsSL https://download.docker.com/linux/debian/gpg | \
+sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+echo \
+"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+bullseye stable" | \
+sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt upgrade -y
+
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+sudo docker run hello-world
+
+ssh parallels@192.168.0.101
+scp -r /Users/user/projects/biss parallels@192.168.0.101:/home/parallels/
+sudo docker compose -f docker-compose-ipvlan-agent.yml up -d
+sudo docker compose down
+
+
+
