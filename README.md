@@ -279,7 +279,7 @@ https://github.com/glpi-project/glpi-agent/releases
 Edit
 /Applications/GLPI-Agent/etc/agent.cfg
 
-server = http://localhost:8080/front/inventory.php
+server = 192.168.0.102
 tag = macOS
 
 Test
@@ -376,3 +376,277 @@ sudo docker compose -f docker-compose-ipvlan-agent.yml ps glpi-agent
 sudo docker compose -f docker-compose-ipvlan-agent.yml logs --tail=100 glpi-agent
 sudo docker compose -f docker-compose-ipvlan-agent.yml exec zabbix-agent ping -c2 192.168.0.29
 sudo docker compose -f docker-compose-ipvlan-agent.yml exec glpi-agent curl -v http://192.168.0.20/Inventory/Configuration
+
+http://localhost:62354/now
+http://localhost:62354/now?task=inventory
+
+# Debian 13 on Parallels
+
+su -
+apt update
+apt upgrade -y
+
+- Install SSH
+
+sudo apt install -y openssh-server
+sudo systemctl enable ssh 
+sudo systemctl start ssh
+ip addr
+ssh debian@192.168.0.102
+
+- Install Parallels Tools
+
+apt install -y dkms gcc make perl linux-headers-$(uname -r)
+apt install -y build-essential
+
+mkdir /tmp/parallels-tools
+cp -a /media/cdrom0/. /tmp/parallels-tools/
+ls -la /tmp/parallels-tools
+chmod +x /tmp/parallels-tools/install
+ls -l /tmp/parallels-tools/install
+cd /tmp/parallels-tools
+./install
+
+rm -rf /tmp/parallels-tools
+
+- Install Visual Code
+
+apt install -y wget gpg apt-transport-https
+
+wget -qO- https://packages.microsoft.com/keys/microsoft.asc | \
+  gpg --dearmor > /tmp/packages.microsoft.gpg
+
+install -D -o root -g root -m 644 \
+  /tmp/packages.microsoft.gpg \
+  /etc/apt/keyrings/packages.microsoft.gpg
+
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" | \
+  sudo tee /etc/apt/sources.list.d/vscode.list
+
+apt update
+apt install -y code
+
+- Install GLPI
+
+apt install -y apache2 mariadb-server
+
+apt install -y \
+php \
+php-cli \
+php-common \
+php-curl \
+php-gd \
+php-intl \
+php-mbstring \
+php-mysql \
+php-bcmath \
+php-xml \
+php-zip \
+php-bz2 \
+php-ldap \
+php-apcu \
+php-opcache \
+php-soap \
+php-exif
+
+php -v
+
+a2enmod rewrite
+a2enmod headers
+a2enmod expires
+systemctl restart apache2
+
+systemctl status apache2
+
+systemctl enable --now mariadb
+
+mariadb-secure-installation
+
+mariadb
+
+CREATE DATABASE glpi10_db;
+CREATE DATABASE glpi11_db;
+CREATE DATABASE glpi12_db;
+CREATE DATABASE nightly_db;
+
+CREATE USER 'glpi10'@'localhost' IDENTIFIED BY 'glpi';
+CREATE USER 'glpi11'@'localhost' IDENTIFIED BY 'glpi';
+CREATE USER 'glpi12'@'localhost' IDENTIFIED BY 'glpi';
+CREATE USER 'nightly'@'localhost' IDENTIFIED BY 'glpi';
+
+GRANT ALL PRIVILEGES ON glpi10_db.* TO 'glpi10'@'localhost';
+GRANT ALL PRIVILEGES ON glpi11_db.* TO 'glpi11'@'localhost';
+GRANT ALL PRIVILEGES ON glpi12_db.* TO 'glpi12'@'localhost';
+GRANT ALL PRIVILEGES ON nightly_db.* TO 'nightly'@'localhost';
+
+FLUSH PRIVILEGES;
+
+EXIT;
+
+mariadb -u glpi -p glpi
+
+EXIT;
+
+SHOW DATABASES;
+SELECT User, Host FROM mysql.user;
+
+DROP DATABASE nightly;
+
+cd /var/www
+
+wget https://github.com/glpi-project/glpi/releases/download/10.0.26/glpi-10.0.26.tgz
+wget https://github.com/glpi-project/glpi/releases/download/11.0.8/glpi-11.0.8.tgz
+wget https://github.com/glpi-project/glpi/releases/download/12.0.0-rc1/glpi-12.0.0-rc1.tgz
+wget https://nightly.glpi-project.org/glpi-releases/11.0-912c94a.tar.gz
+
+tar -xzf glpi-10.0.26.tgz
+tar -xzf glpi-11.0.8.tgz
+tar -xzf glpi-12.0.0-rc1.tgz
+tar -xzf 11.0-912c94a.tar.gz
+
+mv glpi /var/www/glpi10
+mv glpi /var/www/glpi11
+mv glpi /var/www/glpi12
+mv glpi /var/www/nightly
+
+rm glpi-11.0.8.tgz
+
+chown -R www-data:www-data /var/www/glpi10
+find /var/www/glpi10 -type d -exec chmod 755 {} \;
+find /var/www/glpi10 -type f -exec chmod 644 {} \;
+
+chown -R www-data:www-data /var/www/glpi11
+find /var/www/glpi11 -type d -exec chmod 755 {} \;
+find /var/www/glpi11 -type f -exec chmod 644 {} \;
+
+chown -R www-data:www-data /var/www/glpi12
+find /var/www/glpi12 -type d -exec chmod 755 {} \;
+find /var/www/glpi12 -type f -exec chmod 644 {} \;
+
+chown -R www-data:www-data /var/www/nightly
+find /var/www/nightly -type d -exec chmod 755 {} \;
+find /var/www/nightly -type f -exec chmod 644 {} \;
+
+nano /etc/apache2/sites-available/glpi.conf
+
+<VirtualHost *:80>
+
+    ServerName glpi10.local
+
+    DocumentRoot /var/www/glpi10/public
+
+    <Directory /var/www/glpi10/public>
+        Require all granted
+        AllowOverride All
+        Options FollowSymLinks
+        DirectoryIndex index.php
+        FallbackResource /index.php
+    </Directory>
+
+    ErrorLog ${APACHE_LOG_DIR}/glpi_error.log
+    CustomLog ${APACHE_LOG_DIR}/glpi_access.log combined
+
+</VirtualHost>
+
+<VirtualHost *:80>
+
+    ServerName glpi11.local
+
+    DocumentRoot /var/www/glpi11/public
+
+    <Directory /var/www/glpi11/public>
+        Require all granted
+        AllowOverride All
+        Options FollowSymLinks
+        DirectoryIndex index.php
+        FallbackResource /index.php
+    </Directory>
+
+    ErrorLog ${APACHE_LOG_DIR}/glpi_error.log
+    CustomLog ${APACHE_LOG_DIR}/glpi_access.log combined
+
+</VirtualHost>
+
+<VirtualHost *:80>
+
+    ServerName glpi12.local
+
+    DocumentRoot /var/www/glpi12/public
+
+    <Directory /var/www/glpi12/public>
+        Require all granted
+        AllowOverride All
+        Options FollowSymLinks
+        DirectoryIndex index.php
+        FallbackResource /index.php
+    </Directory>
+
+    ErrorLog ${APACHE_LOG_DIR}/glpi_error.log
+    CustomLog ${APACHE_LOG_DIR}/glpi_access.log combined
+
+</VirtualHost>
+
+<VirtualHost *:80>
+
+    ServerName nightly.local
+
+    DocumentRoot /var/www/nightly/public
+
+    <Directory /var/www/nightly/public>
+        Require all granted
+        AllowOverride All
+        Options FollowSymLinks
+        DirectoryIndex index.php
+        FallbackResource /index.php
+    </Directory>
+
+    ErrorLog ${APACHE_LOG_DIR}/glpi_error.log
+    CustomLog ${APACHE_LOG_DIR}/glpi_access.log combined
+
+</VirtualHost>
+
+a2ensite glpi.conf
+a2dissite 000-default.conf
+apache2ctl configtest
+systemctl stop apache2
+systemctl restart apache2
+
+a2ensite glpi.conf
+apache2ctl configtest
+systemctl reload apache2
+
+php --ini
+
+nano /etc/php/8.4/apache2/php.ini
+
+memory_limit = 256M
+upload_max_filesize = 100M
+post_max_size = 100M
+max_execution_time = 120
+max_input_vars = 5000
+session.cookie_httponly = On
+session.cookie_samesite = Lax
+
+systemctl restart apache2
+
+apt install -y ufw
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw enable
+ufw status
+
+http://192.168.0.102
+Database server	localhost
+Database name	glpi
+Database user	glpi
+Database password	glpi
+Port 3306
+
+apt install -y curl
+
+/etc/hosts
+192.168.0.102    glpi10.local
+192.168.0.102    glpi11.local
+192.168.0.102    glpi12.local
+192.168.0.102    nightly.local
